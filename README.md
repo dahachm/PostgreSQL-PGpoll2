@@ -59,7 +59,7 @@ $ sudo apt install pgpool2 -y
     $su postgres -c "psql"
     ```
     ```
-    #: ALTER USER postgres WITH PASSWORD '<password>'
+    #: ALTER USER postgres WITH PASSWORD '<password>';
     ```
 
 ### 2. Настройка прав доступа к таблице мандатных привилегий
@@ -100,3 +100,168 @@ $ sudo apt install pgpool2 -y
     ```
     
   (фото статуса настроек файервола)
+
+## Настройка стриминговой (stream) репликации
+
+1. Остановить кластер на ведомом сервере (**slave**)
+
+  ```
+  $ sudo pg_ctlcluster p.6 main stop
+  ```
+
+2. Отредактировать файлы конфигурации
+
+  Файл /etc/postgresql/9.6/main/postgresql.conf на **master**:
+  
+  ```
+  listen_address = 'localhost, 192.168.12.6'
+  
+  wal_level = replica
+  
+  max_wal_senders = 2
+  wal_keep_segments = 32 
+  ```
+  
+  Файл /etc/postgresql/9.6/main/pg_hba.conf на **master**:
+  
+  ```
+  host     replication     postgres        192.168.12.7/24         trust
+  ```
+  
+  Файл /etc/postgresql/9.6/main/postgresql.conf на **slave**:
+  
+  ```
+  listen_address = 'localhost, 192.168.12.7
+    
+  hot_standby = on
+  ```
+  
+
+3. Перенос резервной копии данных на ведомый сервер
+
+Удалить  все  файлы  в  каталоге  ведомого  сервера  за  исключением
+*pg_audit.conf*:
+
+  ```
+  $ cd /var/lib/postgresql/$VERSION/$SLAVE/
+  $ sudo ls | grep -v pg_audit.conf | xargs rm -rf
+  ```
+  
+От имени пользователя postgres на **master** сервере:
+
+  ```
+  $ su postgres
+  $ psql -h master -p 5432 -U postgres -d template1 -c "SELECT
+pg_start_backup(’initial’);"
+  $ rsync -a /var/lib/postgresql/9.6/main/*
+postgres@$192.168.12.7:/var/lib/postgresql/9.6/main/
+--exclude pg_log/* --exclude pg_xlog/* --exclude postmaster.* --exclude
+pg_audit.conf >> /dev/null
+  $ psql -h master -p 5432 -U postgres -d template1 -c "SELECT
+pg_stop_backup();"
+  ```
+  
+4. Запуск кластера на ведомом сервере (**slave**)
+  
+  ```
+  $ sudo pg_ctlcluster 9.6 main start
+  ```
+  
+  Среди активных процессов на машине **master** должен появится процесс **sender**:
+  
+  
+  Среди активных процессов на машине **slave** должен появится процесс **receiver**:
+  
+5. Тестирование
+
+  Создаем таблицу на **master**:
+  
+  ```
+  $ su postgres -c "psql"
+  ```
+  ```
+  =# CREATE TABLE VPN_proto (ID SERIAL PRIMARY KEY, name CHARACTER VARYING(30), tunnels_num INTEGER, crypts_num INTEGER, KZ_num INTEGER, key_start_date TIMESTAMP );
+  =# INSERT INTO VPN_proto VALUES (1, 'OpenVPN', 2, 2, 5, '2021-06-14 00:01:03');
+  =# INSERT INTO VPN_proto VALUES (2, 'SSTP', 1, 2, 1, '2021-05-04 04:01:00');
+  =# INSERT INTO VPN_proto VALUES (3, 'IPSec', 2, 2, 6, '2021-09-28 10:15:21');
+  ```
+  
+  (рисунок с новой таблицей)
+  
+  Пробуем вывести содержимое таблицы:
+  
+  (получилось)
+  
+  Причем при активном режиме "горячего резервирование" (**hot stanby**) запрещено вносить изменения в БД с запасной машины:
+  
+  (скрин с ошибкой при попытке удаления строки)
+
+## Настройка механизма failover
+
+**Failover** - это ...
+
+### 1. Настройка pgpool2 на balancer
+  
+  На машине **balancer** настроить файл */etc/phpool2/pgpool.conf*:
+  
+  ```
+  listen_addresses = 'localhost, 192.168.12.29'
+  
+  backend_hostname0 = '192.168.12.7'
+  backend_port0 = 5432
+  backend_weight0 = 1
+  backend_data_directory0 = '/var/lib/postgresql/9.6/main'
+  backend_flag0 = 'ALLOW_TO_FAILOVER'
+  
+  backend_hostname0 = '192.168.12.6'
+  backend_port0 = 5432
+  backend_weight0 = 1
+  backend_data_directory0 = '/var/lib/postgresql/9.6/main'
+  backend_flag0 = 'ALLOW_TO_FAILOVER'
+  
+  enable_pool_hba = on
+  
+  log_destination = 'syslog'
+  
+  load_balance_mode = on
+  
+  master_slave_mode = on 
+  master_slave_sub_mode = 'stream'
+  
+  sr_check_period = 10
+  sr_check_user = 'postgres'
+  sr_check_password = '12345678'
+  
+  health_check_period = 10
+  health_check_timeout = 20
+  health_check_user = 'postgres'
+  health_check_password = '12345678'
+  health_check_database = 'postgres'
+
+  failover_command = '/etc/pgpool2/failover.sh %d %H %M /tmp/trigger_main.5432'
+  
+  fail_over_on_backend_error = on
+  ```
+  
+  В файле */etc/pgpool2/pool_hba.conf* на машине **balancer**:
+  
+  ```
+  host    all         all         192.168.12.0/24       trust
+  ```
+  
+### 2. Настройка pgpool2 на остальных машинах
+
+На машине **master** поправить */etc/pgpool2/pgpool.conf*:
+
+  ```
+  listen_addresses = 'localhost, 192.168.12.6'
+  
+  log_destination = 'syslog'
+  
+  ```
+  
+
+  
+
+  
+  ```
