@@ -97,6 +97,8 @@ $ sudo apt install pgpool2 -y
     $ sudo ufw allow out 5432/tcp
     $ sudo ufw allow in 5433/tcp
     $ sudo ufw allow out 5433/tcp
+    $ sudo ufw allow in 9898/tcp
+    $ sudo ufw allow out 9898/tcp
     ```
     
   (фото статуса настроек файервола)
@@ -205,7 +207,7 @@ pg_stop_backup();"
   На машине **balancer** настроить файл */etc/phpool2/pgpool.conf*:
   
   ```
-  listen_addresses = 'localhost, 192.168.12.29'
+  listen_addresses = '192.168.12.29'
   
   backend_hostname0 = '192.168.12.7'
   backend_port0 = 5432
@@ -249,7 +251,7 @@ pg_stop_backup();"
   host    all         all         192.168.12.0/24       trust
   ```
   
-### 2. Настройка pgpool2 на остальных машинах
+### 2. Настройка pgpool2 на остальных машинах <---- вроде не нужно это настраивать, т.к. pgpool проверяет состояния самой СУБД postgresql на порту 5432
 
 На машине **master** поправить */etc/pgpool2/pgpool.conf*:
 
@@ -257,11 +259,92 @@ pg_stop_backup();"
   listen_addresses = 'localhost, 192.168.12.6'
   
   log_destination = 'syslog'
-  
   ```
   
+### 3. Настройка аутентификации в pgpool communication manager (pcp)
 
-  
+Для доступа к менеджеру ресурсов pcp необходимо настроить аутентификацию пользователя, от имени которого будет вызывать утилита. Это пользователь необязательно должен быть пользователем в СУБД. 
+Файл /etc/pgpool2/pool_passwd содержит информацию о хэше паролей соответсвующих пользователей и именно по этому файлу происходит аутентификация пользователя при вызове pcp.
 
-  
-  ```
+Создание записи о хэше пароля заданного пользователя (root):
+
+```
+$ sudo pg_md5 -U root -p --md5auth
+```
+
+После этого потребуется ввести пароль, задаваемый указанному пользователю. 
+
+Новая запись появится в конце файла /etc/pgpool2/pool_passwd:
+
+(рисунок)
+
+Нужно также добавить пароль в конец файла /etc/pgpool2/pcp.conf.
+
+Для этого сначала получить его в форме md5:
+
+```
+$ sudo pg_md5 -p 
+```
+
+И результат вывода добавить в /etc/pgpool2/pcp.conf вместе с именем пользователя в формает USER:MD5PASSWORD:
+
+(рисунок)
+
+Теперь можем получать информации о состоянии узлов (бэкенды, указанные в конфиге pgpool2 с соответсвующими id).
+
+```
+$ pcp_node_info -h 192.168.12.29 -n 0 -v
+```
+
+(рисунок)
+
+```
+$ pcp_node_info -h 192.168.12.29 -n 1 -v
+```
+
+(рисунок)
+
+Расшифровка статусов:
+
+```
+0 - this state is only used during initialization. PCP will never display it.
+1 - Node is up. No connections yet.
+2 - Node is up. Connections are pooled.
+3 - Node is down.
+```
+
+### 4. Failover
+
+Создать скрипт */etc/pgpool2/failover.sh*Ж
+
+```
+#! /bin/sh
+# Failover command for streaming replication.
+# This script assumes that DB node 1 is primary, and 0 is standby.
+#
+# If primary goes down, create a
+# trigger file so that standby takes over primary node.
+#
+# Arguments: $1: failed node id. $2: new primary node hostname. $3: path to
+# trigger file.
+
+failed_node=$1
+new_primary=$2
+trigger_file=$3
+
+KEY_PATH="/var/lib/postgresql/.ssh/id_rsa"
+
+if [ $failed_node = 1 ]; then
+     if [ $UID -eq 0 ]
+     then
+         sudo -l postgres ssh -T -i $KEY_PATH postgres@$new_primary "touch $trigger_file"
+        exit 0;
+     fi
+     ssh -T -i $KEY_PATH postgres@$new_primary "touch $trigger_file"
+fi;
+
+echo "Сервер $failed_node упал."
+echo "Ведущий сервер - $new_primary."
+
+exit 0;
+```
