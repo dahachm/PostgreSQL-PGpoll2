@@ -156,7 +156,7 @@ $ sudo apt install pgpool2 -y
   $ psql -h master -p 5432 -U postgres -d template1 -c "SELECT
 pg_start_backup(’initial’);"
   $ rsync -a /var/lib/postgresql/9.6/main/*
-postgres@$192.168.12.7:/var/lib/postgresql/9.6/main/
+postgres@192.168.12.7:/var/lib/postgresql/9.6/main/
 --exclude pg_log/* --exclude pg_xlog/* --exclude postmaster.* --exclude
 pg_audit.conf >> /dev/null
   $ psql -h master -p 5432 -U postgres -d template1 -c "SELECT
