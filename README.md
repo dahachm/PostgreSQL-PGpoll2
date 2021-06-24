@@ -15,6 +15,8 @@ $ sudo apt install postgresql postgresql-contrib postgresql-client -y
 ```
 $ sudo apt install pgadmin3 -y
 ```
+
+Пакет pgpool2 достаточно установить только на том узле, на котором должна производится балансировка запросов и контроль состояния остальных узлов кластера (у нас это узел balancer):
 ```
 $ sudo apt install pgpool2 -y
 ```
@@ -399,3 +401,29 @@ trigger_file = '/tmp/trigger_main.5432'
 Когда упавший узел восстановлен и готов к работе, данные в нем нужно согласовать с данными на других активных узлах и после этого добавить его в связку.
 Pgpool II также умеет проводить эти операции автоматически в рамках механизма **online recovery**.
 
+Задать новые параметры в конфигурационном файле /etc/pgpool2/pgpool.conf (узел balancer):
+
+```
+recovery_user = 'postgres'
+recovery_password = '12345678'
+
+recovery_1st_stage_command = 'basebackup.sh'
+```
+
+На узле, который в данный момент является primary node, в каталог postgresql (/var/lib/postgresql/9.6/main/) добавить скрипт basebackup.sh:
+
+```
+#!/bin/bash
+# Recovery script for streaming replication
+#
+
+datadir=$1
+desthost=$2
+destdir=$3
+
+psql -U postgres -d template1 -c "SELECT pg_start_backup('initial');"
+
+rsync -a /var/lib/postgresql/9.6/main/* postgres@192.168.12.7:/var/lib/postgresql/9.6/main/ --exclude pg_log/* --exclude pg_xlog/* --exclude postmaster.* --exclude pg_audit.conf >> /dev/null
+
+psql -U postgres -d template1 -c "SELECT pg_stop_backup();" 
+```
