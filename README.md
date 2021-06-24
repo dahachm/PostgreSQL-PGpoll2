@@ -88,6 +88,15 @@ $ sudo apt install pgpool2 -y
   
   (Сюда тоже можно рисунок, кто куда должен входить по SSH без пароля)
   
+  А также для пользователя root с узла balancer на узлы master и slave (нужно для удаленного создания триггер файлов и управления):
+    
+    ```
+    $ su root
+    # ssh-keygen -P '' -f /root/.ssh/id_rsa
+    # ssh-copy-id -i /root/.ssh/id_rsa postgres@192.168.12.6
+    # ssh-copy-id -i /root/.ssh/id_rsa postgres@192.168.12.7
+    ```
+  
 ## Открыть порты 
 
     ```
@@ -315,6 +324,8 @@ $ pcp_node_info -h 192.168.12.29 -n 1 -v
 
 ### 4. Failover
 
+Балансировщик должен ловить моменты, когда "падает" один из узлов и запускать процесс смены ролей, в случае необходимости (а необходимо это тогда, когда упавший узел являлся master'ом и для продолжения корректной работы сервиса нужно срочно установить новый primary узел). Эти операции и включает в себя механизм **Failover**. 
+
 Создать скрипт */etc/pgpool2/failover.sh*Ж
 
 ```
@@ -325,26 +336,66 @@ $ pcp_node_info -h 192.168.12.29 -n 1 -v
 # If primary goes down, create a
 # trigger file so that standby takes over primary node.
 #
-# Arguments: $1: failed node id. $2: new primary node hostname. $3: path to
+# Arguments: $1: failed node id. $2: failed node hostname. $3: new primary node hostname. $4: path to
 # trigger file.
 
 failed_node=$1
-new_primary=$2
-trigger_file=$3
+failed_node_hostname=$2
+new_primary=$3
+trigger_file=$4
 
-KEY_PATH="/var/lib/postgresql/.ssh/id_rsa"
+key_path="/var/lib/postgresql/.ssh/id_rsa"
+root_key_path="/root/.ssh/id_rsa"
 
 if [ $failed_node = 1 ]; then
      if [ $UID -eq 0 ]
      then
-         sudo -l postgres ssh -T -i $KEY_PATH postgres@$new_primary "touch $trigger_file"
+         ssh -T -i $root_key_path postgres@$new_primary "touch $trigger_file"
         exit 0;
      fi
-     ssh -T -i $KEY_PATH postgres@$new_primary "touch $trigger_file"
+     ssh -T -i $key_path postgres@$new_primary "touch $trigger_file"
 fi;
 
-echo "Сервер $failed_node упал."
+echo "Сервер $failed_node_hostname упал."
 echo "Ведущий сервер - $new_primary."
 
 exit 0;
 ```
+Установить права исполнения на файл:
+
+```
+$ sudo chown :postgres /etc/pgpool2/failover.sh
+$ sudo chnod 775 /etc/pgpool2/failover.sh
+```
+
+Создать файл *recovery.conf* на узле **slave**:
+
+```
+$ su postgres
+$ nano /var/lib/postgresql/9.6/main/recovery.conf
+```
+
+Со следюущим содержимым:
+
+```
+standby_mode = 'on'
+primary_conninfo = 'host=192.168.12.6 port=5432 user=postgres password=12345678'
+trigger_file = '/tmp/trigger_main.5432'
+```
+
+**Тестирование работы failover**
+
+1. Останавливаем кластер на узле master
+2. Смотрим логи
+  pgpool2 на balancer:
+  postgresql на master:
+  postgresql на slave:
+3. Смотрим наличие trigger файла на узле slave
+4. Проверяем возможность внесения изменений в БД с узла slave 
+
+
+### Online recovery
+
+Когда упавший узел восстановлен и готов к работе, данные в нем нужно согласовать с данными на других активных узлах и после этого добавить его в связку.
+Pgpool II также умеет проводить эти операции автоматически в рамках механизма **online recovery**.
+
